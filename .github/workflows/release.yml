@@ -53,10 +53,16 @@ jobs:
           java-version: '21'
           distribution: 'graalvm'
           github-token: ${{ secrets.GITHUB_TOKEN }}
-      - run: chmod +x gradlew && ./gradlew jar
-      - name: Build Native
-        run: native-image --no-fallback --enable-all-security-services --enable-url-protocols=https -jar build/libs/*.jar multi-android
-      - uses: actions/upload-artifact@v4
+      
+      - name: Build JAR & Native Image
+        run: |
+          chmod +x gradlew
+          ./gradlew jar
+          # Added -H:+Pie to fix "text relocations" error on Android
+          native-image -H:+Pie --no-fallback --enable-all-security-services --enable-url-protocols=https -jar build/libs/fastdownloader.jar multi-android
+      
+      - name: Upload Android Binary
+        uses: actions/upload-artifact@v4
         with:
           name: multi-android
           path: multi-android
