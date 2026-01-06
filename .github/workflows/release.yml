@@ -55,15 +55,24 @@ jobs:
           java-version: '21'
           distribution: 'graalvm'
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          # THIS IS THE MAGIC LINE:
-          native-image-musl: 'true'
+          # REMOVED: native-image-musl: 'true' (It installs the wrong architecture)
+      
+      - name: Install ARM64 Musl Toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools zlib1g-dev
+          
+          # Verify the toolchain works
+          musl-gcc -v
       
       - name: Build Static Native Image
         run: |
           chmod +x gradlew
           ./gradlew jar
-          # Build using --static --libc=musl
+          # We explicitly tell GraalVM to use the system installed musl-gcc
+          # No fancy flags, just straight --static --libc=musl
           native-image --static --libc=musl --no-fallback --enable-url-protocols=https -jar build/libs/*.jar multi-android
+
       
       - name: Upload Android Binary
         uses: actions/upload-artifact@v4
