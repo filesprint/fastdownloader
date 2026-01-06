@@ -6,10 +6,7 @@ import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.TimeUnit
 import java.io.IOException
 
-// Minimal dependency: implementation("com.squareup.okhttp3:okhttp:4.12.0")
-
 fun main(args: Array<String>) {
-    // 1. Handle Arguments: Support "multi <url>" single command style
     if (args.isEmpty()) {
         println("Usage: multi <url> [optional_filename]")
         return
@@ -17,7 +14,6 @@ fun main(args: Array<String>) {
 
     val url = args[0]
 
-    // Auto-detect filename if not provided
     val outputName = if (args.size > 1) {
         args[1]
     } else {
@@ -25,92 +21,94 @@ fun main(args: Array<String>) {
         if (fileName.isEmpty() || !fileName.contains(".")) "downloaded_file.bin" else fileName
     }
 
-    // Save to CURRENT directory (where the command is run)
     val file = File(outputName)
     val outputPath = file.absolutePath
-
     val threadCount = 16
 
     println("Initializing High-Speed Downloader...")
     println("Target: $url")
     println("Output: $outputPath")
-    println("Forcing $threadCount parallel connections...")
 
-    // 2. Configure Dispatcher & Client
-    val dispatcher = Dispatcher().apply {
-        maxRequests = threadCount
-        maxRequestsPerHost = threadCount
-    }
-
+    val dispatcher = Dispatcher()
     val client = OkHttpClient.Builder()
         .dispatcher(dispatcher)
         .connectionPool(ConnectionPool(threadCount, 5, TimeUnit.MINUTES))
         .retryOnConnectionFailure(true)
         .protocols(listOf(Protocol.HTTP_1_1))
+        // Disable gzip (critical for correctness)
+        .addInterceptor { chain ->
+            chain.proceed(
+                chain.request().newBuilder()
+                    .header("Accept-Encoding", "identity")
+                    .build()
+            )
+        }
         .build()
 
-    // 3. Fetch Content-Length
-    var response: Response? = null
-    try {
-        val request = Request.Builder().url(url).head().build()
-        response = client.newCall(request).execute()
+    // ---------------------------
+    // RANGE PROBE (aria2c style)
+    // ---------------------------
+    val probeRequest = Request.Builder()
+        .url(url)
+        .header("Range", "bytes=0-0")
+        .build()
+
+    val (supportsRange, contentLength) = try {
+        client.newCall(probeRequest).execute().use { resp ->
+            val range = resp.header("Content-Range")
+            if (resp.code == 206 && range != null) {
+                true to (range.substringAfter("/").toLong())
+            } else {
+                false to (resp.header("Content-Length")?.toLongOrNull() ?: -1L)
+            }
+        }
     } catch (e: Exception) {
         println("Failed to connect: ${e.message}")
         return
     }
 
-    if (!response.isSuccessful) {
-        println("Failed to fetch file info: ${response.code}")
+    // ---------------------------
+    // FALLBACK: SINGLE STREAM
+    // ---------------------------
+    if (!supportsRange || contentLength <= 0) {
+        println("Server does not support Range requests.")
+        println("Falling back to single-stream download...")
+
+        singleStreamDownload(client, url, file)
+        println("\nDownload Complete!")
         return
     }
 
-    val contentLength = response.header("Content-Length")?.toLong() ?: -1L
-    response.close()
-
-    if (contentLength == -1L) {
-        println("Server does not support Content-Length. Cannot use parallel download.")
-        return
-    }
-
+    // ---------------------------
+    // PARALLEL DOWNLOAD
+    // ---------------------------
+    println("Range supported. Using parallel download.")
     println("Total Size: ${formatSize(contentLength)}")
+    println("Forcing $threadCount parallel connections...")
 
-    // 4. Prepare File
     if (file.exists()) file.delete()
-    val raf = RandomAccessFile(file, "rw")
-    raf.setLength(contentLength)
-    raf.close()
+    RandomAccessFile(file, "rw").use { it.setLength(contentLength) }
 
     val partSize = contentLength / threadCount
     val latch = CountDownLatch(threadCount)
     val totalBytesDownloaded = AtomicLong(0)
 
-    // 5. Monitor Thread
-    val monitorThread = Thread {
+    // Monitor
+    Thread {
         var lastBytes = 0L
         while (latch.count > 0) {
-            try { Thread.sleep(1000) } catch (e: InterruptedException) { break }
-
-            val currentBytes = totalBytesDownloaded.get()
-            val bytesThisSecond = currentBytes - lastBytes
-            lastBytes = currentBytes
-
-            val speed = formatSize(bytesThisSecond) + "/s"
-            val progress = (currentBytes.toDouble() / contentLength * 100).toInt()
-            val remainingBytes = contentLength - currentBytes
-            val etaSeconds = if (bytesThisSecond > 0) remainingBytes / bytesThisSecond else 0
-            val eta = String.format("%02d:%02d:%02d", etaSeconds / 3600, (etaSeconds % 3600) / 60, etaSeconds % 60)
-            val activeThreads = latch.count
-
-            print("\rProgress: $progress% | Threads: $activeThreads | Speed: $speed | Downloaded: ${formatSize(currentBytes)} | ETA: $eta   ")
+            Thread.sleep(1000)
+            val current = totalBytesDownloaded.get()
+            val speed = formatSize(current - lastBytes) + "/s"
+            lastBytes = current
+            val progress = (current * 100 / contentLength)
+            print("\rProgress: $progress% | Threads: ${latch.count} | Speed: $speed")
         }
-    }.apply { start() }
+    }.start()
 
-    // 6. Launch Parallel Requests with RETRY Logic
     for (i in 0 until threadCount) {
         val start = i * partSize
-        val end = if (i == threadCount - 1) contentLength - 1 else (start + partSize - 1)
-
-        // Launch a thread that handles its own retry loop
+        val end = if (i == threadCount - 1) contentLength - 1 else start + partSize - 1
         Thread {
             downloadChunkWithRetry(client, url, start, end, file, totalBytesDownloaded, latch, i)
         }.start()
@@ -119,10 +117,36 @@ fun main(args: Array<String>) {
     latch.await()
     println("\n\nDownload Complete!")
     client.dispatcher.executorService.shutdown()
-    System.exit(0) // Ensure clean exit for native image
+    System.exit(0)
 }
 
-// 7. Robust Retry Logic with RESUME Capabilities
+// ------------------------------------------------
+// SINGLE STREAM FALLBACK (SAFE, NO RANGE)
+// ------------------------------------------------
+fun singleStreamDownload(client: OkHttpClient, url: String, file: File) {
+    val request = Request.Builder().url(url).build()
+
+    client.newCall(request).execute().use { response ->
+        if (!response.isSuccessful) {
+            throw IOException("Download failed: ${response.code}")
+        }
+
+        response.body!!.byteStream().use { input ->
+            file.outputStream().use { output ->
+                val buffer = ByteArray(64 * 1024)
+                while (true) {
+                    val read = input.read(buffer)
+                    if (read == -1) break
+                    output.write(buffer, 0, read)
+                }
+            }
+        }
+    }
+}
+
+// ------------------------------------------------
+// PARALLEL CHUNK DOWNLOAD (RETRY SAFE)
+// ------------------------------------------------
 fun downloadChunkWithRetry(
     client: OkHttpClient,
     url: String,
@@ -133,65 +157,55 @@ fun downloadChunkWithRetry(
     latch: CountDownLatch,
     id: Int
 ) {
+    var currentPos = start
     var attempt = 1
     val maxRetries = 100
-    var success = false
-    var currentPos = start // Track where we are in this specific chunk
 
-    while (attempt <= maxRetries && !success) {
+    while (attempt <= maxRetries) {
         try {
-            // Safety: If we've somehow already finished this chunk, exit
-            if (currentPos > end) {
-                success = true
-                latch.countDown()
-                return
-            }
+            if (currentPos > end) break
 
-            val rangeRequest = Request.Builder()
+            val request = Request.Builder()
                 .url(url)
-                .header("Range", "bytes=$currentPos-$end") // KEY CHANGE: Request only remaining bytes
+                .header("Range", "bytes=$currentPos-$end")
                 .build()
 
-            val response = client.newCall(rangeRequest).execute()
-            if (!response.isSuccessful) {
-                response.close() // Prevent connection leak on error
-                // 416 means "Range Not Satisfiable" - usually implies we are already done
-                if (response.code == 416) {
-                    success = true
-                    latch.countDown()
-                    return
+            client.newCall(request).execute().use { response ->
+                if (response.code != 206) {
+                    throw IOException("Range not honored (code ${response.code})")
                 }
-                throw IOException("Server Error ${response.code}")
+
+                response.body!!.source().use { source ->
+                    RandomAccessFile(file, "rw").use { raf ->
+                        raf.seek(currentPos)
+                        val buffer = ByteArray(64 * 1024)
+
+                        while (currentPos <= end) {
+                            val read = source.read(buffer)
+                            if (read == -1) break
+
+                            val toWrite = minOf(read.toLong(), end - currentPos + 1).toInt()
+                            raf.write(buffer, 0, toWrite)
+                            currentPos += toWrite
+                            totalBytes.addAndGet(toWrite.toLong())
+                        }
+                    }
+                }
             }
 
-            response.body?.source()?.use { source ->
-                val threadRaf = RandomAccessFile(file, "rw")
-                threadRaf.seek(currentPos) // KEY CHANGE: Seek to the resume position
-
-                val buffer = ByteArray(65536)
-                var bytesRead: Int
-                while (source.read(buffer).also { bytesRead = it } != -1) {
-                    threadRaf.write(buffer, 0, bytesRead)
-                    totalBytes.addAndGet(bytesRead.toLong())
-                    currentPos += bytesRead // KEY CHANGE: Advance our local position marker
-                }
-                threadRaf.close()
-            }
-            success = true
-            latch.countDown()
+            if (currentPos > end) break
 
         } catch (e: Exception) {
-            // Quietly retry. Because we updated 'currentPos', the next loop will
-            // automatically resume exactly where we failed.
             attempt++
-            try { Thread.sleep(2000) } catch (x: Exception) {} // Backoff 2s
+            Thread.sleep(2000)
         }
     }
 
-    if (!success) {
-        println("\nThread $id failed permanently after $maxRetries attempts.")
-        latch.countDown() // Prevent hang
+    if (currentPos <= end) {
+        println("\nThread $id failed permanently.")
     }
+
+    latch.countDown()
 }
 
 fun formatSize(v: Long): String {
