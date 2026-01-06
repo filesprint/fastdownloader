@@ -69,9 +69,10 @@ jobs:
         run: |
           chmod +x gradlew
           ./gradlew jar
-          # We explicitly tell GraalVM to use the system installed musl-gcc
-          # No fancy flags, just straight --static --libc=musl
-          native-image --static --libc=musl --no-fallback --enable-url-protocols=https -jar build/libs/*.jar multi-android
+          # Force it to use the system musl-gcc
+          native-image --static --libc=musl -H:CCompiler=musl-gcc --no-fallback --enable-url-protocols=https -jar build/libs/*.jar multi-android
+
+
 
       
       - name: Upload Android Binary
