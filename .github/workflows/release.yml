@@ -69,13 +69,16 @@ jobs:
         run: |
           chmod +x gradlew
           ./gradlew jar
-          # Force it to use the system musl-gcc
-          native-image --static --libc=musl -H:+UnlockExperimentalVMOptions -H:CCompilerPath=musl-gcc --no-fallback --enable-url-protocols=https -jar build/libs/*.jar multi-android
+          
+          # Find the absolute path of musl-gcc
+          COMPILER_PATH=$(which musl-gcc)
+          echo "Found musl-gcc at: $COMPILER_PATH"
+          
+          # Use the variable with the absolute path
+          native-image --static --libc=musl -H:+UnlockExperimentalVMOptions -H:CCompilerPath="$COMPILER_PATH" --no-fallback --enable-url-protocols=https -jar build/libs/*.jar multi-android
 
 
 
-
-      
       - name: Upload Android Binary
         uses: actions/upload-artifact@v4
         with:
