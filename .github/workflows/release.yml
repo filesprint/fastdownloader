@@ -70,7 +70,8 @@ jobs:
           chmod +x gradlew
           ./gradlew jar
           # Force it to use the system musl-gcc
-          native-image --static --libc=musl -H:CCompiler=musl-gcc --no-fallback --enable-url-protocols=https -jar build/libs/*.jar multi-android
+          native-image --static --libc=musl -H:+UnlockExperimentalVMOptions -H:CCompilerPath=musl-gcc --no-fallback --enable-url-protocols=https -jar build/libs/*.jar multi-android
+
 
 
 
