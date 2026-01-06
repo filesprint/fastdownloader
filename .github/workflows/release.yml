@@ -1,0 +1,62 @@
+name: Build All Platforms
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  # 1. Windows
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: '21'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - run: ./gradlew.bat jar
+      - name: Build Native
+        # Using wildcard to find ANY jar in the folder
+        run: native-image --no-fallback --enable-all-security-services --enable-url-protocols=https -jar build/libs/*.jar multi-windows
+      - uses: actions/upload-artifact@v4
+        with:
+          name: multi-windows
+          path: multi-windows.exe
+
+  # 2. Linux x64
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: '21'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - run: chmod +x gradlew && ./gradlew jar
+      - name: Build Native
+        run: native-image --no-fallback --enable-all-security-services --enable-url-protocols=https -jar build/libs/*.jar multi-linux-x64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: multi-linux-x64
+          path: multi-linux-x64
+
+  # 3. Android ARM64
+  build-android:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: '21'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - run: chmod +x gradlew && ./gradlew jar
+      - name: Build Native
+        run: native-image --no-fallback --enable-all-security-services --enable-url-protocols=https -jar build/libs/*.jar multi-android
+      - uses: actions/upload-artifact@v4
+        with:
+          name: multi-android
+          path: multi-android
