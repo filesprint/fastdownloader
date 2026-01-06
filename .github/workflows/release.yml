@@ -55,27 +55,31 @@ jobs:
           java-version: '21'
           distribution: 'graalvm'
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          # REMOVED: native-image-musl: 'true' (It installs the wrong architecture)
+          native-image-musl: 'true'  # ENABLE THIS: It downloads the missing 'libjava.a' etc.
       
-      - name: Install ARM64 Musl Toolchain
+      - name: Install ARM64 Musl Toolchain & Fix Compiler
         run: |
           sudo apt-get update
           sudo apt-get install -y musl-tools zlib1g-dev
           
-          # Verify the toolchain works
-          musl-gcc -v
+          # TRICK: GraalVM's setup installs a broken x86 compiler. 
+          # We simply delete it and link our system ARM compiler in its place.
+          
+          # Find where Graal is looking (based on your previous logs)
+          MUSL_TOOLCHAIN_PATH="/opt/hostedtoolcache/musl-toolchain/1.2.5-oracle-00001/arm64/bin"
+          
+          # Force link system musl-gcc to the name Graal wants
+          sudo ln -sf /usr/bin/musl-gcc "$MUSL_TOOLCHAIN_PATH/x86_64-linux-musl-gcc"
+          
+          # Verify it works now
+          "$MUSL_TOOLCHAIN_PATH/x86_64-linux-musl-gcc" -v
       
       - name: Build Static Native Image
         run: |
           chmod +x gradlew
           ./gradlew jar
-          
-          # Find the absolute path of musl-gcc
-          COMPILER_PATH=$(which musl-gcc)
-          echo "Found musl-gcc at: $COMPILER_PATH"
-          
-          # Use the variable with the absolute path
-          native-image --static --libc=musl -H:+UnlockExperimentalVMOptions -H:CCompilerPath="$COMPILER_PATH" --no-fallback --enable-url-protocols=https -jar build/libs/*.jar multi-android
+          # Now we can just run it normally, because we fixed the toolchain file
+          native-image --static --libc=musl --no-fallback --enable-url-protocols=https -jar build/libs/*.jar multi-android
 
 
 
