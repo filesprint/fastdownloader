@@ -6,40 +6,54 @@ on:
   workflow_dispatch:
 
 jobs:
-  # 1. Windows
+  # --------------------
+  # Windows x64
+  # --------------------
   build-windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: graalvm/setup-graalvm@v1
+
+      - name: Set up GraalVM
+        uses: graalvm/setup-graalvm@v1
         with:
+          distribution: graalvm
           java-version: '21'
-          distribution: 'graalvm'
           github-token: ${{ secrets.GITHUB_TOKEN }}
-      - run: ./gradlew.bat jar
-      - name: Build Native
-        # Using wildcard to find ANY jar in the folder
-        run: native-image --no-fallback --enable-all-security-services --enable-url-protocols=https -jar build/libs/*.jar multi-windows
-      - uses: actions/upload-artifact@v4
+
+      - name: Build Native Image (Windows)
+        run: ./gradlew nativeCompile
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
         with:
           name: multi-windows
-          path: multi-windows.exe
+          path: build/native/nativeCompile/multi.exe
 
-  # 2. Linux x64
+
+  # --------------------
+  # Linux x64
+  # --------------------
   build-linux:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: graalvm/setup-graalvm@v1
+
+      - name: Set up GraalVM
+        uses: graalvm/setup-graalvm@v1
         with:
+          distribution: graalvm
           java-version: '21'
-          distribution: 'graalvm'
           github-token: ${{ secrets.GITHUB_TOKEN }}
-      - run: chmod +x gradlew && ./gradlew jar
-      - name: Build Native
-        run: native-image --no-fallback --enable-all-security-services --enable-url-protocols=https -jar build/libs/*.jar multi-linux-x64
-      - uses: actions/upload-artifact@v4
+
+      - name: Make Gradle executable
+        run: chmod +x gradlew
+
+      - name: Build Native Image (Linux)
+        run: ./gradlew nativeCompile
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
         with:
           name: multi-linux-x64
-          path: multi-linux-x64
-  
+          path: build/native/nativeCompile/multi
