@@ -43,20 +43,31 @@ jobs:
           name: multi-linux-x64
           path: multi-linux-x64
 
-  # 3. Android ARM64
+
+    # 3. Android/Linux (ARM64) - Static Musl Build
   build-android:
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
+      
       - uses: graalvm/setup-graalvm@v1
         with:
           java-version: '21'
           distribution: 'graalvm'
           github-token: ${{ secrets.GITHUB_TOKEN }}
-      - run: chmod +x gradlew && ./gradlew jar
-      - name: Build Native
-        run: native-image -H:+UnlockExperimentalVMOptions -H:NativeLinkerOption=-pie -H:CCompilerOption=-fPIC --no-fallback --enable-all-security-services --enable-url-protocols=https -jar build/libs/*.jar multi-android
-      - uses: actions/upload-artifact@v4
+          # THIS IS THE MAGIC LINE:
+          native-image-musl: 'true'
+      
+      - name: Build Static Native Image
+        run: |
+          chmod +x gradlew
+          ./gradlew jar
+          # Build using --static --libc=musl
+          native-image --static --libc=musl --no-fallback --enable-url-protocols=https -jar build/libs/*.jar multi-android
+      
+      - name: Upload Android Binary
+        uses: actions/upload-artifact@v4
         with:
           name: multi-android
           path: multi-android
+
