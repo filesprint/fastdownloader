@@ -55,7 +55,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - run: chmod +x gradlew && ./gradlew jar
       - name: Build Native
-        run: native-image -H:+UnlockExperimentalVMOptions -H:NativeLinkerOption=-pie --no-fallback --enable-all-security-services --enable-url-protocols=https -jar build/libs/*.jar multi-android
+        run: native-image -H:+UnlockExperimentalVMOptions -H:NativeLinkerOption=-pie -H:CCompilerOption=-fPIC --no-fallback --enable-all-security-services --enable-url-protocols=https -jar build/libs/*.jar multi-android
       - uses: actions/upload-artifact@v4
         with:
           name: multi-android
