@@ -20,29 +20,20 @@ application {
     mainClass.set("FastDownloaderKt")
 }
 
-tasks.jar {
-    manifest {
-        attributes["Main-Class"] = "FastDownloaderKt"
-    }
-    // This includes dependencies (OkHttp) inside the jar so it's standalone
-    from(sourceSets.main.get().output)
-    dependsOn(configurations.runtimeClasspath)
-    from({
-        configurations.runtimeClasspath.get().filter { it.name.endsWith("jar") }.map { zipTree(it) }
-    })
-    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
-}
-
 graalvmNative {
     binaries {
         named("main") {
-            // Name of the output file (multi.exe)
             imageName.set("multi")
 
-            // Standard options for better compatibility
-            buildArgs.add("--no-fallback")
-            buildArgs.add("--enable-all-security-services")
-            buildArgs.add("--enable-url-protocols=https")
+            buildArgs.addAll(
+                listOf(
+                    "--no-fallback",
+                    "--enable-http",
+                    "--enable-https",
+                    "-H:+StripDebugInfo",
+                    "-H:NativeLinkerOption=-s"
+                )
+            )
         }
     }
 }

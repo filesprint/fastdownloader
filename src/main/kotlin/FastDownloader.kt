@@ -9,7 +9,6 @@ import java.io.IOException
 // Minimal dependency: implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
 fun main(args: Array<String>) {
-    System.setProperty("okhttp.platform", "jdk9")
     // 1. Handle Arguments: Support "multi <url>" single command style
     if (args.isEmpty()) {
         println("Usage: multi <url> [optional_filename]")
