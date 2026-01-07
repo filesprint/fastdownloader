@@ -17,25 +17,28 @@ fun main(args: Array<String>) {
     val outputName = if (args.size > 1) {
         args[1]
     } else {
-        val fileName = url.substringAfterLast("/")
-        if (fileName.isEmpty() || !fileName.contains(".")) "downloaded_file.bin" else fileName
+        val name = url.substringAfterLast("/")
+        if (name.isEmpty() || !name.contains(".")) "downloaded_file.bin" else name
     }
 
     val file = File(outputName)
-    val outputPath = file.absolutePath
     val threadCount = 16
 
     println("Initializing High-Speed Downloader...")
     println("Target: $url")
-    println("Output: $outputPath")
+    println("Output: ${file.absolutePath}")
 
-    val dispatcher = Dispatcher()
+    val dispatcher = Dispatcher().apply {
+        maxRequests = threadCount
+        maxRequestsPerHost = threadCount
+    }
+
     val client = OkHttpClient.Builder()
         .dispatcher(dispatcher)
         .connectionPool(ConnectionPool(threadCount, 5, TimeUnit.MINUTES))
         .retryOnConnectionFailure(true)
         .protocols(listOf(Protocol.HTTP_1_1))
-        // Disable gzip (critical for correctness)
+        // IMPORTANT: Disable gzip (range correctness)
         .addInterceptor { chain ->
             chain.proceed(
                 chain.request().newBuilder()
@@ -45,19 +48,20 @@ fun main(args: Array<String>) {
         }
         .build()
 
-    // ---------------------------
-    // RANGE PROBE (aria2c style)
-    // ---------------------------
+    /* -------------------------------------------------------
+       RANGE + REDIRECT PROBE (FINAL ENDPOINT ONLY)
+       ------------------------------------------------------- */
     val probeRequest = Request.Builder()
         .url(url)
+        .get()
         .header("Range", "bytes=0-0")
         .build()
 
     val (supportsRange, contentLength) = try {
         client.newCall(probeRequest).execute().use { resp ->
-            val range = resp.header("Content-Range")
-            if (resp.code == 206 && range != null) {
-                true to (range.substringAfter("/").toLong())
+            val contentRange = resp.header("Content-Range")
+            if (resp.code == 206 && contentRange != null) {
+                true to contentRange.substringAfter("/").toLong()
             } else {
                 false to (resp.header("Content-Length")?.toLongOrNull() ?: -1L)
             }
@@ -67,11 +71,11 @@ fun main(args: Array<String>) {
         return
     }
 
-    // ---------------------------
-    // FALLBACK: SINGLE STREAM
-    // ---------------------------
+    /* -------------------------------------------------------
+       FALLBACK: SINGLE STREAM
+       ------------------------------------------------------- */
     if (!supportsRange || contentLength <= 0) {
-        println("Server does not support Range requests.")
+        println("Server does not support parallel range download.")
         println("Falling back to single-stream download...")
 
         singleStreamDownload(client, url, file)
@@ -79,9 +83,9 @@ fun main(args: Array<String>) {
         return
     }
 
-    // ---------------------------
-    // PARALLEL DOWNLOAD
-    // ---------------------------
+    /* -------------------------------------------------------
+       PARALLEL DOWNLOAD
+       ------------------------------------------------------- */
     println("Range supported. Using parallel download.")
     println("Total Size: ${formatSize(contentLength)}")
     println("Forcing $threadCount parallel connections...")
@@ -91,17 +95,17 @@ fun main(args: Array<String>) {
 
     val partSize = contentLength / threadCount
     val latch = CountDownLatch(threadCount)
-    val totalBytesDownloaded = AtomicLong(0)
+    val totalBytes = AtomicLong(0)
 
-    // Monitor
+// Progress monitor
     Thread {
-        var lastBytes = 0L
+        var last = 0L
         while (latch.count > 0) {
             Thread.sleep(1000)
-            val current = totalBytesDownloaded.get()
-            val speed = formatSize(current - lastBytes) + "/s"
-            lastBytes = current
-            val progress = (current * 100 / contentLength)
+            val now = totalBytes.get()
+            val speed = formatSize(now - last) + "/s"
+            last = now
+            val progress = (now * 100 / contentLength)
             print("\rProgress: $progress% | Threads: ${latch.count} | Speed: $speed")
         }
     }.start()
@@ -109,8 +113,11 @@ fun main(args: Array<String>) {
     for (i in 0 until threadCount) {
         val start = i * partSize
         val end = if (i == threadCount - 1) contentLength - 1 else start + partSize - 1
+
         Thread {
-            downloadChunkWithRetry(client, url, start, end, file, totalBytesDownloaded, latch, i)
+            downloadChunkWithRetry(
+                client, url, start, end, file, totalBytes, latch, i
+            )
         }.start()
     }
 
@@ -118,11 +125,12 @@ fun main(args: Array<String>) {
     println("\n\nDownload Complete!")
     client.dispatcher.executorService.shutdown()
     System.exit(0)
+
 }
 
-// ------------------------------------------------
-// SINGLE STREAM FALLBACK (SAFE, NO RANGE)
-// ------------------------------------------------
+/* -------------------------------------------------------
+SINGLE STREAM (NO RANGE)
+------------------------------------------------------- */
 fun singleStreamDownload(client: OkHttpClient, url: String, file: File) {
     val request = Request.Builder().url(url).build()
 
@@ -142,11 +150,12 @@ fun singleStreamDownload(client: OkHttpClient, url: String, file: File) {
             }
         }
     }
+
 }
 
-// ------------------------------------------------
-// PARALLEL CHUNK DOWNLOAD (RETRY SAFE)
-// ------------------------------------------------
+/* -------------------------------------------------------
+PARALLEL CHUNK DOWNLOAD (RETRY SAFE)
+------------------------------------------------------- */
 fun downloadChunkWithRetry(
     client: OkHttpClient,
     url: String,
@@ -184,7 +193,9 @@ fun downloadChunkWithRetry(
                             val read = source.read(buffer)
                             if (read == -1) break
 
-                            val toWrite = minOf(read.toLong(), end - currentPos + 1).toInt()
+                            val toWrite =
+                                minOf(read.toLong(), end - currentPos + 1).toInt()
+
                             raf.write(buffer, 0, toWrite)
                             currentPos += toWrite
                             totalBytes.addAndGet(toWrite.toLong())
@@ -206,10 +217,15 @@ fun downloadChunkWithRetry(
     }
 
     latch.countDown()
+
 }
 
 fun formatSize(v: Long): String {
     if (v < 1024) return "$v B"
     val z = (63 - java.lang.Long.numberOfLeadingZeros(v)) / 10
-    return String.format("%.1f %sB", v.toDouble() / (1L shl (z * 10)), " KMGTPE"[z])
+    return String.format(
+        "%.1f %sB",
+        v.toDouble() / (1L shl (z * 10)),
+        " KMGTPE"[z]
+    )
 }
