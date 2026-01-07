@@ -5,6 +5,8 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.TimeUnit
 import java.io.IOException
+import java.net.URLDecoder
+import java.nio.charset.StandardCharsets
 
 fun main(args: Array<String>) {
     if (args.isEmpty()) {
@@ -14,20 +16,15 @@ fun main(args: Array<String>) {
 
     val url = args[0]
 
-    val outputName = if (args.size > 1) {
-        args[1]
-    } else {
-        val name = url.substringAfterLast("/")
-        if (name.isEmpty() || !name.contains(".")) "downloaded_file.bin" else name
+    var file: File? = null
+    if (args.size > 1) {
+        file = File(args[1])
     }
 
-    val file = File(outputName)
     val threadCount = 16
 
     println("Initializing High-Speed Downloader...")
     println("Target: $url")
-    println("Output: ${file.absolutePath}")
-    println("Forcing $threadCount parallel connections...")
 
     val dispatcher = Dispatcher().apply {
         maxRequests = threadCount
@@ -39,7 +36,6 @@ fun main(args: Array<String>) {
         .connectionPool(ConnectionPool(threadCount, 5, TimeUnit.MINUTES))
         .retryOnConnectionFailure(true)
         .protocols(listOf(Protocol.HTTP_1_1))
-        // Disable gzip (critical for range correctness)
         .addInterceptor { chain ->
             chain.proceed(
                 chain.request().newBuilder()
@@ -50,11 +46,18 @@ fun main(args: Array<String>) {
         .build()
 
     /* -------------------------------------------------------
-       GET CONTENT LENGTH (simple & optimistic)
+       GET CONTENT LENGTH + DETECT FILENAME
        ------------------------------------------------------- */
     val contentLength = try {
         val req = Request.Builder().url(url).get().build()
         client.newCall(req).execute().use { resp ->
+
+            // 🔹 Detect filename ONLY if user didn't provide one
+            if (file == null) {
+                val detectedName = extractFileName(resp)
+                file = File(detectedName)
+            }
+
             resp.header("Content-Length")?.toLongOrNull() ?: run {
                 println("Failed to determine file size.")
                 return
@@ -65,17 +68,20 @@ fun main(args: Array<String>) {
         return
     }
 
+    val outputFile = file!!
+    println("Output: ${outputFile.absolutePath}")
+    println("Forcing $threadCount parallel connections...")
     println("Total Size: ${formatSize(contentLength)}")
 
-    if (file.exists()) file.delete()
-    RandomAccessFile(file, "rw").use { it.setLength(contentLength) }
+    if (outputFile.exists()) outputFile.delete()
+    RandomAccessFile(outputFile, "rw").use { it.setLength(contentLength) }
 
     val partSize = contentLength / threadCount
     val latch = CountDownLatch(threadCount)
     val totalBytes = AtomicLong(0)
 
     /* -------------------------------------------------------
-       PROGRESS MONITOR (FULL INFO)
+       PROGRESS MONITOR (UNCHANGED)
        ------------------------------------------------------- */
     Thread {
         var lastBytes = 0L
@@ -121,7 +127,7 @@ fun main(args: Array<String>) {
     }.start()
 
     /* -------------------------------------------------------
-       PARALLEL DOWNLOAD
+       PARALLEL DOWNLOAD (UNCHANGED)
        ------------------------------------------------------- */
     for (i in 0 until threadCount) {
         val start = i * partSize
@@ -129,7 +135,7 @@ fun main(args: Array<String>) {
 
         Thread {
             downloadChunkWithRetry(
-                client, url, start, end, file, totalBytes, latch, i
+                client, url, start, end, outputFile, totalBytes, latch, i
             )
         }.start()
     }
@@ -141,7 +147,35 @@ fun main(args: Array<String>) {
 }
 
 /* -------------------------------------------------------
-   PARALLEL CHUNK DOWNLOAD (RETRY SAFE)
+   FILENAME EXTRACTION (NEW, ONLY ADDITION)
+   ------------------------------------------------------- */
+fun extractFileName(response: Response): String {
+
+    // 1️⃣ Content-Disposition header
+    response.header("Content-Disposition")?.let { disposition ->
+        val match = Regex("filename\\*?=(?:UTF-8''|\"?)([^\";]+)")
+            .find(disposition)
+        if (match != null) {
+            return URLDecoder.decode(
+                match.groupValues[1],
+                StandardCharsets.UTF_8.name()
+            )
+        }
+    }
+
+    // 2️⃣ Final redirected URL path
+    val path = response.request.url.encodedPath
+    val nameFromPath = path.substringAfterLast('/')
+    if (nameFromPath.isNotEmpty() && nameFromPath.contains('.')) {
+        return nameFromPath
+    }
+
+    // 3️⃣ Fallback
+    return "downloaded_file.bin"
+}
+
+/* -------------------------------------------------------
+   PARALLEL CHUNK DOWNLOAD (UNCHANGED)
    ------------------------------------------------------- */
 fun downloadChunkWithRetry(
     client: OkHttpClient,
