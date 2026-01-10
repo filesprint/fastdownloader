@@ -21,7 +21,7 @@ fun main(args: Array<String>) {
         file = File(args[1])
     }
 
-    val threadCount = 16
+    val threadCount = 1
 
     println("Initializing High-Speed Downloader...")
     println("Target: $url")
